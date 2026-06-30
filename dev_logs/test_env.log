@@ -1,0 +1,162 @@
+✗ c20h30o2@c20h30o2:~/projects_cpp/bustub/build ((v20251119-2025fall))$   make trie_test -j$(nproc) && ./test/trie_test
+[  0%] Built target fort
+[  0%] Built target bustub_murmur3
+[  1%] Built target gtest
+[  3%] Built target bustub_storage_table
+[  5%] Built target bustub_buffer
+[  7%] Built target bustub_container_disk_hash
+[  9%] Built target bustub_concurrency
+[  9%] Built target fmt
+[ 11%] Built target bustub_catalog
+[ 15%] Built target bustub_recovery
+[ 21%] Built target duckdb_pg_query
+[ 25%] Built target bustub_common
+[ 29%] Built target bustub_storage_index
+[ 31%] Built target bustub_storage_disk
+[ 35%] Built target bustub_statement
+[ 45%] Built target bustub_optimizer
+[ 52%] Built target bustub_binder
+[ 60%] Built target bustub_storage_page
+[ 68%] Built target bustub_type
+[ 70%] Built target gmock
+[ 74%] Built target bustub_primer
+[ 90%] Built target bustub_execution
+[ 96%] Built target bustub_planner
+[ 98%] Built target gmock_main
+[ 98%] Built target bustub
+[ 98%] Building CXX object test/CMakeFiles/trie_test.dir/primer/trie_test.cpp.o
+[ 98%] Building CXX object test/CMakeFiles/trie_test.dir/__/tools/backtrace.cpp.o
+[100%] Linking CXX executable trie_test
+[100%] Built target trie_test
+Running main() from gmock_main.cc
+[==========] Running 14 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 14 tests from TrieTest
+[ RUN      ] TrieTest.ConstructorTest
+[       OK ] TrieTest.ConstructorTest (0 ms)
+[ RUN      ] TrieTest.BasicPutTest
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.BasicPutTest (0 ms)
+[ RUN      ] TrieTest.TrieStructureCheck
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.TrieStructureCheck (0 ms)
+[ RUN      ] TrieTest.BasicPutGetTest
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.BasicPutGetTest (0 ms)
+[ RUN      ] TrieTest.PutGetOnePath
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.PutGetOnePath (0 ms)
+[ RUN      ] TrieTest.BasicRemoveTest1
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.BasicRemoveTest1 (0 ms)
+[ RUN      ] TrieTest.BasicRemoveTest2
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.BasicRemoveTest2 (0 ms)
+[ RUN      ] TrieTest.RemoveFreeTest
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.RemoveFreeTest (0 ms)
+[ RUN      ] TrieTest.MismatchTypeTest
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.MismatchTypeTest (0 ms)
+[ RUN      ] TrieTest.CopyOnWriteTest1
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.CopyOnWriteTest1 (0 ms)
+[ RUN      ] TrieTest.CopyOnWriteTest2
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.CopyOnWriteTest2 (0 ms)
+[ RUN      ] TrieTest.CopyOnWriteTest3
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.CopyOnWriteTest3 (0 ms)
+[ RUN      ] TrieTest.MixedTest
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.MixedTest (0 ms)
+[ RUN      ] TrieTest.PointerStability
+
+Exception Type :: Not implemented, Message :: Trie::Put is not implemented.
+
+unknown file: Failure
+C++ exception with description "Trie::Put is not implemented." thrown in the test body.
+
+[  FAILED  ] TrieTest.PointerStability (0 ms)
+[----------] 14 tests from TrieTest (2 ms total)
+
+[----------] Global test environment tear-down
+[==========] 14 tests from 1 test suite ran. (2 ms total)
+[  PASSED  ] 1 test.
+[  FAILED  ] 13 tests, listed below:
+[  FAILED  ] TrieTest.BasicPutTest
+[  FAILED  ] TrieTest.TrieStructureCheck
+[  FAILED  ] TrieTest.BasicPutGetTest
+[  FAILED  ] TrieTest.PutGetOnePath
+[  FAILED  ] TrieTest.BasicRemoveTest1
+[  FAILED  ] TrieTest.BasicRemoveTest2
+[  FAILED  ] TrieTest.RemoveFreeTest
+[  FAILED  ] TrieTest.MismatchTypeTest
+[  FAILED  ] TrieTest.CopyOnWriteTest1
+[  FAILED  ] TrieTest.CopyOnWriteTest2
+[  FAILED  ] TrieTest.CopyOnWriteTest3
+[  FAILED  ] TrieTest.MixedTest
+[  FAILED  ] TrieTest.PointerStability
+
+13 FAILED TESTS
+
