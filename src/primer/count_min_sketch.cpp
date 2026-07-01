@@ -79,11 +79,9 @@ CountMinSketch<KeyType>::CountMinSketch(uint32_t width, uint32_t depth) : width_
 }
 
 template <typename KeyType>
-CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept : width_(other.width_), depth_(other.depth_) {
-  sketch_ = std::make_unique<std::atomic<uint32_t>[]>(width_ * depth_);
-  for (size_t i{}; i < width_ * depth_; ++i) {
-    sketch_[i].store(other.sketch_[i].exchange(0));
-  }
+CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept
+    : width_(std::exchange(other.width_, 0)), depth_(std::exchange(other.depth_, 0)) {
+  sketch_ = std::move(other.sketch_);
   hash_functions_ = std::move(other.hash_functions_);
   /** @TODO(student) Implement this function! */
 }
@@ -91,12 +89,9 @@ CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept : width
 template <typename KeyType>
 auto CountMinSketch<KeyType>::operator=(CountMinSketch &&other) noexcept -> CountMinSketch & {
   /** @TODO(student) Implement this function! */
-  width_ = other.width_;
-  depth_ = other.depth_;
-  sketch_ = std::make_unique<std::atomic<uint32_t>[]>(width_ * depth_);
-  for (size_t i{}; i < width_ * depth_; ++i) {
-    sketch_[i].store(other.sketch_[i].exchange(0));
-  }
+  width_ = std::exchange(other.width_, 0);
+  depth_ = std::exchange(other.depth_, 0);
+  sketch_ = std::move(other.sketch_);
   hash_functions_ = std::move(other.hash_functions_);
   return *this;
 }
