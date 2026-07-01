@@ -16,12 +16,14 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+#include "fmt/chrono.h"
 
 namespace bustub {
 
@@ -35,6 +37,13 @@ namespace bustub {
 template <typename KeyType>
 CountMinSketch<KeyType>::CountMinSketch(uint32_t width, uint32_t depth) : width_(width), depth_(depth) {
   /** @TODO(student) Implement this function! */
+  if (depth_ == 0 || width_ == 0) {
+    throw std::invalid_argument("width|depth is zero");
+  }
+  sketch_ = std::make_unique<std::atomic<uint32_t>[]>(width_ * depth_);
+  for (size_t i{}; i < width_ * depth_; ++i) {
+    sketch_[i].store(0);
+  }
 
   /** @fall2025 PLEASE DO NOT MODIFY THE FOLLOWING */
   // Initialize seeded hash functions
@@ -42,7 +51,6 @@ CountMinSketch<KeyType>::CountMinSketch(uint32_t width, uint32_t depth) : width_
   for (size_t i = 0; i < depth_; i++) {
     hash_functions_.push_back(this->HashFunction(i));
   }
-  sketch_.reserve(depth_);
   // error
   // for (auto &i : sketch_) {
   //   i.reserve(width_);
@@ -68,23 +76,28 @@ CountMinSketch<KeyType>::CountMinSketch(uint32_t width, uint32_t depth) : width_
   //     sketch_[i].emplace_back(0u);
   //   }
   // }
-
 }
 
 template <typename KeyType>
-CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept
-    : width_(std::exchange(other.width_, 0)),
-      depth_(std::exchange(other.depth_, 0)),
-      sketch_(std::move(other.sketch_)) {
+CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept : width_(other.width_), depth_(other.depth_) {
+  sketch_ = std::make_unique<std::atomic<uint32_t>[]>(width_ * depth_);
+  for (size_t i{}; i < width_ * depth_; ++i) {
+    sketch_[i].store(other.sketch_[i].exchange(0));
+  }
+  hash_functions_ = std::move(other.hash_functions_);
   /** @TODO(student) Implement this function! */
 }
 
 template <typename KeyType>
 auto CountMinSketch<KeyType>::operator=(CountMinSketch &&other) noexcept -> CountMinSketch & {
   /** @TODO(student) Implement this function! */
-  width_ = std::exchange(other.width_, 0);
-  depth_ = std::exchange(other.depth_, 0);
-  sketch_ = std::move(other.sketch_);
+  width_ = other.width_;
+  depth_ = other.depth_;
+  sketch_ = std::make_unique<std::atomic<uint32_t>[]>(width_ * depth_);
+  for (size_t i{}; i < width_ * depth_; ++i) {
+    sketch_[i].store(other.sketch_[i].exchange(0));
+  }
+  hash_functions_ = std::move(other.hash_functions_);
   return *this;
 }
 
@@ -92,7 +105,7 @@ template <typename KeyType>
 void CountMinSketch<KeyType>::Insert(const KeyType &item) {
   /** @TODO(student) Implement this function! */
   for (size_t i{}; i < depth_; ++i) {
-    sketch_[i][hash_functions_[i](item) % width_].fetch_add(1);
+    sketch_[i * width_ + hash_functions_[i](item) % width_].fetch_add(1);
   }
 }
 
@@ -102,19 +115,16 @@ void CountMinSketch<KeyType>::Merge(const CountMinSketch<KeyType> &other) {
     throw std::invalid_argument("Incompatible CountMinSketch dimensions for merge.");
   }
   /** @TODO(student) Implement this function! */
-  std::lock_guard lock(mutex_);
-  for (size_t i{}; i < depth_; ++i) {
-    for (size_t j{}; j < width_; ++j) {
-      sketch_[i][j].fetch_add(other.sketch_[i][j].load());
-    }
+  for (size_t i{}; i < width_ * depth_; ++i) {
+    sketch_[i].fetch_add(other.sketch_[i].load());
   }
 }
 
 template <typename KeyType>
 auto CountMinSketch<KeyType>::Count(const KeyType &item) const -> uint32_t {
-  uint32_t ans = 0;
+  uint32_t ans = UINT32_MAX;
   for (size_t i{}; i < depth_; ++i) {
-    ans = std::min(ans, sketch_[depth_][hash_functions_[depth_](item) % width_].load());
+    ans = std::min(ans, sketch_[hash_functions_[i](item) % width_ + i * width_].load());
   }
   return ans;
 }
@@ -122,10 +132,9 @@ auto CountMinSketch<KeyType>::Count(const KeyType &item) const -> uint32_t {
 template <typename KeyType>
 void CountMinSketch<KeyType>::Clear() {
   /** @TODO(student) Implement this function! */
-  std::lock_guard lock(mutex_);
-  width_ = 0;
-  depth_ = 0;
-  sketch_.clear();
+  for (size_t i{}; i < width_ * depth_; ++i) {
+    sketch_[i].store(0);
+  }
 }
 
 template <typename KeyType>
@@ -133,7 +142,7 @@ auto CountMinSketch<KeyType>::TopK(uint16_t k, const std::vector<KeyType> &candi
     -> std::vector<std::pair<KeyType, uint32_t>> {
   /** @TODO(student) Implement this function! */
   auto comp = [](const std::pair<KeyType, uint32_t> &i, const std::pair<KeyType, uint32_t> &j) -> bool {
-    return i.second > j.second;
+    return i.second < j.second;
   };
   std::priority_queue<std::pair<KeyType, uint32_t>, std::vector<std::pair<KeyType, uint32_t>>, decltype(comp)> que(
       comp);
