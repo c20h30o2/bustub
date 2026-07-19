@@ -82,7 +82,11 @@ template <typename KeyType>
 CountMinSketch<KeyType>::CountMinSketch(CountMinSketch &&other) noexcept
     : width_(std::exchange(other.width_, 0)), depth_(std::exchange(other.depth_, 0)) {
   sketch_ = std::move(other.sketch_);
-  hash_functions_ = std::move(other.hash_functions_);
+  // hash_functions_ = std::move(other.hash_functions_);
+  hash_functions_.reserve(depth_);
+  for (size_t i = 0; i < depth_; ++i) {
+    hash_functions_.emplace_back(HashFunction(i));
+  }
   /** @TODO(student) Implement this function! */
 }
 
@@ -92,7 +96,7 @@ auto CountMinSketch<KeyType>::operator=(CountMinSketch &&other) noexcept -> Coun
   width_ = std::exchange(other.width_, 0);
   depth_ = std::exchange(other.depth_, 0);
   sketch_ = std::move(other.sketch_);
-  hash_functions_ = std::move(other.hash_functions_);
+  // hash_functions_ = std::move(other.hash_functions_);
   return *this;
 }
 
@@ -119,6 +123,7 @@ template <typename KeyType>
 auto CountMinSketch<KeyType>::Count(const KeyType &item) const -> uint32_t {
   uint32_t ans = UINT32_MAX;
   for (size_t i{}; i < depth_; ++i) {
+    // %0 err
     ans = std::min(ans, sketch_[hash_functions_[i](item) % width_ + i * width_].load());
   }
   return ans;
