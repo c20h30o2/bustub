@@ -13,7 +13,6 @@
 
 #include "buffer/arc_replacer.h"
 #include <cassert>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -207,11 +206,11 @@ void ArcReplacer::SetEvictable(frame_id_t frame_id, bool set_evictable) {
   std::lock_guard<std::mutex> lock(latch_);
   // std::cout << "set_evictable:frame_id:" << frame_id << " able:" << set_evictable << '\n';
   if (auto iter = alive_map_.find(frame_id); iter != alive_map_.end()) {
-    if (set_evictable == false && iter->second->evictable_ == true) {
+    if (!set_evictable && iter->second->evictable_) {
       // std::cout << curr_size_ << "set" << '\n';
       --curr_size_;
     }
-    if (set_evictable == true && iter->second->evictable_ == false) {
+    if (set_evictable && !iter->second->evictable_) {
       ++curr_size_;
     }
     iter->second->evictable_ = set_evictable;
@@ -255,10 +254,7 @@ void ArcReplacer::Remove(frame_id_t frame_id) {
       //           << " curr_size:" << curr_size_ << '\n';
       break;
     }
-    case bustub::ArcStatus::MRU_GHOST: {
-    }
-    case bustub::ArcStatus::MFU_GHOST: {
-    }
+    default:;
   }
   alive_map_.erase(iter);
 }
