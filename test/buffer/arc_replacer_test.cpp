@@ -214,6 +214,68 @@ TEST(ArcReplacerTest, DISABLED_SampleTest2) {
   ASSERT_EQ(1, arc_replacer.Evict());
 }
 
+TEST(ArcReplacerTest, EvictableStateTest) {
+  ArcReplacer arc_replacer(3);
+
+  // A newly recorded frame is pinned by default and should not contribute to Size().
+  arc_replacer.RecordAccess(1, 10);
+  ASSERT_EQ(0, arc_replacer.Size());
+  ASSERT_EQ(std::nullopt, arc_replacer.Evict());
+
+  // Marking the frame as evictable should increase Size() exactly once.
+  arc_replacer.SetEvictable(1, true);
+  ASSERT_EQ(1, arc_replacer.Size());
+  arc_replacer.SetEvictable(1, true);
+  ASSERT_EQ(1, arc_replacer.Size());
+
+  // Pinning the frame again should decrease Size() exactly once.
+  arc_replacer.SetEvictable(1, false);
+  ASSERT_EQ(0, arc_replacer.Size());
+  arc_replacer.SetEvictable(1, false);
+  ASSERT_EQ(0, arc_replacer.Size());
+  ASSERT_EQ(std::nullopt, arc_replacer.Evict());
+}
+
+TEST(ArcReplacerTest, AlternateListEvictionTest) {
+  ArcReplacer arc_replacer(3);
+
+  // Access page 1 twice so it moves from MRU to MFU and remains evictable.
+  arc_replacer.RecordAccess(1, 1);
+  arc_replacer.SetEvictable(1, true);
+  arc_replacer.RecordAccess(1, 1);
+
+  // Add a pinned page to MRU. Since the MRU target is 0, eviction first
+  // considers MRU, but it must fall back to MFU when MRU has no victim.
+  arc_replacer.RecordAccess(2, 2);
+  arc_replacer.SetEvictable(2, false);
+  // Now [][p(2,f2)]![(1,f1)][] p=0
+  ASSERT_EQ(1, arc_replacer.Size());
+  ASSERT_EQ(1, arc_replacer.Evict());
+  ASSERT_EQ(0, arc_replacer.Size());
+  ASSERT_EQ(std::nullopt, arc_replacer.Evict());
+}
+
+TEST(ArcReplacerTest, RemoveTest) {
+  ArcReplacer arc_replacer(3);
+
+  // Add two evictable frames and remove frame 1 explicitly. Remove() should
+  // forget the frame instead of moving its page into a ghost list.
+  arc_replacer.RecordAccess(1, 10);
+  arc_replacer.SetEvictable(1, true);
+  arc_replacer.RecordAccess(2, 20);
+  arc_replacer.SetEvictable(2, true);
+  ASSERT_EQ(2, arc_replacer.Size());
+
+  arc_replacer.Remove(1);
+  ASSERT_EQ(1, arc_replacer.Size());
+  ASSERT_EQ(2, arc_replacer.Evict());
+  ASSERT_EQ(0, arc_replacer.Size());
+
+  // Removing a frame that is no longer tracked should be a no-op.
+  arc_replacer.Remove(1);
+  ASSERT_EQ(0, arc_replacer.Size());
+}
+
 // Feel free to write more tests!
 
 }  // namespace bustub
