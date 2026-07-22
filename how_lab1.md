@@ -151,3 +151,93 @@
   理解这张转换关系后，再看官网算法会清晰很多。
 
 
+-------------------------------
+
+› 用ascii图表示arcreplacer diskmanager buffermanager guard diskscheduler这些组件的关系
+
+
+•                     数据库其他组件 / 执行器
+                                │
+                                │ ReadPage(page_id)
+                                │ WritePage(page_id)
+                                ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │                    BufferPoolManager                        │
+  │                                                             │
+  │  page_table_       page_id ───────────────► frame_id        │
+  │  free_frames_      尚未使用的 Frame                         │
+  │  frames_           内存中的固定大小 Frame                   │
+  │  pin_count_        页面当前被多少 Guard 使用                │
+  │  is_dirty_         页面是否需要写回磁盘                     │
+  └─────────┬───────────────────┬───────────────────┬───────────┘
+            │                   │                   │
+            │ 管理淘汰状态      │ 提交磁盘请求      │ 创建并返回
+            ▼                   ▼                   ▼
+  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+  │   ArcReplacer    │  │  DiskScheduler   │  │    PageGuard     │
+  │                  │  │                  │  │                  │
+  │ MRU              │  │ request_queue_   │  │ ReadPageGuard    │
+  │ MFU              │  │ background thread│  │ WritePageGuard   │
+  │ MRU ghost        │  │ promise/future   │  │                  │
+  │ MFU ghost        │  └────────┬─────────┘  │ 管理：           │
+  │                  │           │            │ - 页面读写锁     │
+  │ 决定驱逐哪个     │           │ 调用       │ - pin_count      │
+  │ frame_id         │           ▼            │ - dirty 状态     │
+  └──────────────────┘  ┌──────────────────┐  │ - 自动 Drop      │
+                        │   DiskManager    │  └────────┬─────────┘
+                        │                  │           │
+                        │ ReadPage()       │           │ 使用页面数据
+                        │ WritePage()      │           ▼
+                        │ DeletePage()     │       Frame.data_
+                        └────────┬─────────┘
+                                 │
+                                 │ 实际磁盘 I/O
+                                 ▼
+                        ┌──────────────────┐
+                        │      Disk        │
+                        │                  │
+                        │ page 0           │
+                        │ page 1           │
+                        │ page 2 ...       │
+                        └──────────────────┘
+
+  读取不在内存中的页面：
+
+  调用者
+    │
+    ▼
+  BufferPoolManager
+    │
+    ├─ page_table_ 中存在 ─────────────► 使用现有 Frame
+    │
+    └─ page_table_ 中不存在
+           │
+           ├─ free_frames_ 非空 ─────────► 使用空闲 Frame
+           │
+           └─ 没有空闲 Frame
+                  │
+                  ▼
+             ArcReplacer::Evict()
+                  │
+                  └─ 返回可驱逐 frame_id
+                         │
+                         ├─ 脏页 ─► DiskScheduler ─► DiskManager ─► 写盘
+                         │
+                         └─ DiskScheduler ─► DiskManager ─► 读取目标页
+                                                          │
+                                                          ▼
+                                                      PageGuard
+
+  Guard 释放流程：
+
+  ReadPageGuard / WritePageGuard::Drop()
+                    │
+                    ├─ 释放页面读锁或写锁
+                    ├─ pin_count--
+                    │
+                    └─ pin_count == 0
+                           │
+                           ▼
+                ArcReplacer::SetEvictable(frame_id, true)
+
+

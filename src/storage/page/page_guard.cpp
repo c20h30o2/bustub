@@ -11,9 +11,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "storage/page/page_guard.h"
+#include <future>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <utility>
+#include <vector>
 #include "buffer/arc_replacer.h"
 #include "common/macros.h"
+#include "fmt/chrono.h"
+#include "storage/disk/disk_scheduler.h"
 
 namespace bustub {
 
@@ -30,6 +37,19 @@ namespace bustub {
  * @param bpm_latch A shared pointer to the buffer pool manager's latch.
  * @param disk_scheduler A shared pointer to the buffer pool manager's disk scheduler.
  */
+/**
+ * @brief 唯一能够创建有效 RAII `ReadPageGuard` 的构造函数。
+ *
+ * 只有缓冲池管理器可以调用此构造函数。
+ *
+ * TODO(P1)：补充实现。
+ *
+ * @param page_id 要读取的页面的 Page ID。
+ * @param frame 指向承载目标页面的帧的共享指针。
+ * @param replacer 指向缓冲池管理器替换器的共享指针。
+ * @param bpm_latch 指向缓冲池管理器锁的共享指针。
+ * @param disk_scheduler 指向缓冲池管理器磁盘调度器的共享指针。
+ */
 ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> frame,
                              std::shared_ptr<ArcReplacer> replacer, std::shared_ptr<std::mutex> bpm_latch,
                              std::shared_ptr<DiskScheduler> disk_scheduler)
@@ -38,7 +58,8 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
       replacer_(std::move(replacer)),
       bpm_latch_(std::move(bpm_latch)),
       disk_scheduler_(std::move(disk_scheduler)) {
-  UNIMPLEMENTED("TODO(P1): Add implementation.");
+  frame_->rwlatch_.lock_shared();
+  is_valid_ = true;
 }
 
 /**
@@ -56,7 +77,25 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
  *
  * @param that The other page guard.
  */
-ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept {}
+/**
+ * @brief `ReadPageGuard` 的移动构造函数。
+ *
+ * 应先理解移动语义；必须转移至少五个字段，并使源 Guard 失效，否则可能发生资源被重复释放。
+ *
+ * TODO(P1)：补充实现。
+ *
+ * @param that 另一个 Page Guard。
+ */
+ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept {
+  page_id_ = that.page_id_;
+  frame_ = that.frame_;
+  replacer_ = that.replacer_;
+  disk_scheduler_ = that.disk_scheduler_;
+  bpm_latch_ = that.bpm_latch_;
+  that.Drop();
+  frame_->rwlatch_.lock_shared();
+  is_valid_ = true;
+}
 
 /**
  * @brief The move assignment operator for `ReadPageGuard`.
@@ -75,29 +114,62 @@ ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept {}
  * @param that The other page guard.
  * @return ReadPageGuard& The newly valid `ReadPageGuard`.
  */
-auto ReadPageGuard::operator=(ReadPageGuard &&that) noexcept -> ReadPageGuard & { return *this; }
+/**
+ * @brief `ReadPageGuard` 的移动赋值运算符。
+ *
+ * 除转移至少五个字段并使源 Guard 失效外，还必须先释放当前对象可能持有的资源。
+ *
+ * TODO(P1)：补充实现。
+ *
+ * @param that 另一个 Page Guard。
+ * @return ReadPageGuard& 移动后变为有效状态的当前 `ReadPageGuard`。
+ */
+auto ReadPageGuard::operator=(ReadPageGuard &&that) noexcept -> ReadPageGuard & {
+  if (is_valid_ && page_id_ == that.page_id_) {
+    return *this;
+  }
+  if (is_valid_ && page_id_ != that.page_id_) {
+    std::lock_guard<std::mutex> lock(*bpm_latch_);
+    if (frame_->pin_count_.fetch_sub(1)) {
+      replacer_->SetEvictable(frame_->frame_id_, true);
+    }
+    frame_->rwlatch_.unlock();
+  }
+  page_id_ = that.page_id_;
+  frame_ = that.frame_;
+  replacer_ = that.replacer_;
+  disk_scheduler_ = that.disk_scheduler_;
+  bpm_latch_ = that.bpm_latch_;
+  that.Drop();
+  frame_->rwlatch_.lock_shared();
+  is_valid_ = true;
+  return *this;
+}
 
 /**
  * @brief Gets the page ID of the page this guard is protecting.
  */
+/** @brief 取得当前 Guard 所保护页面的 Page ID。 */
 auto ReadPageGuard::GetPageId() const -> page_id_t {
-  BUSTUB_ENSURE(is_valid_, "tried to use an invalid read guard");
-  return page_id_;
+  BUSTUB_ENSURE(is_valid_, "tried to use an invalid page guard");
+  return frame_->page_id_;
 }
 
 /**
  * @brief Gets a `const` pointer to the page of data this guard is protecting.
  */
+/** @brief 取得指向当前 Guard 所保护页面数据的只读指针。 */
 auto ReadPageGuard::GetData() const -> const char * {
-  BUSTUB_ENSURE(is_valid_, "tried to use an invalid read guard");
+  BUSTUB_ENSURE(is_valid_, "tried to use an invalid page guard");
   return frame_->GetData();
 }
 
 /**
  * @brief Returns whether the page is dirty (modified but not flushed to the disk).
  */
+/** @brief 返回页面是否为脏页，即是否已修改但尚未刷新到磁盘。 */
 auto ReadPageGuard::IsDirty() const -> bool {
-  BUSTUB_ENSURE(is_valid_, "tried to use an invalid read guard");
+  BUSTUB_ENSURE(is_valid_, "tried to use an invalid page guard");
   return frame_->is_dirty_;
 }
 
@@ -106,7 +178,18 @@ auto ReadPageGuard::IsDirty() const -> bool {
  *
  * TODO(P1): Add implementation.
  */
-void ReadPageGuard::Flush() { UNIMPLEMENTED("TODO(P1): Add implementation."); }
+/** @brief 安全地把该页面的数据刷新到磁盘。TODO(P1)：补充实现。 */
+auto ReadPageGuard::SingleRequest(bool is_write) -> std::future<bool> {
+  std::promise<bool> promise = disk_scheduler_->CreatePromise();
+  std::future<bool> future = promise.get_future();
+  std::vector<DiskRequest> reqs;
+  reqs.emplace_back(DiskRequest{is_write, frame_->GetDataMut(), frame_->page_id_, std::move(promise)});
+  return future;
+}
+void ReadPageGuard::Flush() {
+  BUSTUB_ENSURE(is_valid_, "tried to use an invalid page guard");
+  SingleRequest(true).get();
+}
 
 /**
  * @brief Manually drops a valid `ReadPageGuard`'s data. If this guard is invalid, this function does nothing.
@@ -119,9 +202,30 @@ void ReadPageGuard::Flush() { UNIMPLEMENTED("TODO(P1): Add implementation."); }
  *
  * TODO(P1): Add implementation.
  */
-void ReadPageGuard::Drop() { UNIMPLEMENTED("TODO(P1): Add implementation."); }
+/**
+ * @brief 手工释放有效 `ReadPageGuard` 的资源；Guard 无效时不做任何事。必须避免重复释放，并仔细考虑所拥有
+ * 的资源及其释放顺序；顺序错误很可能导致后续测试失败。在特定情况下可能还需要获取缓冲池管理器的锁。
+ * TODO(P1)：补充实现。
+ */
+void ReadPageGuard::Drop() {
+  if (!is_valid_) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  if (frame_->pin_count_.fetch_sub(1) == 1) {
+    replacer_->SetEvictable(frame_->frame_id_, true);
+  }
+  is_valid_ = false;
+  replacer_ = nullptr;
+  disk_scheduler_ = nullptr;
+  bpm_latch_ = nullptr;
+  std::shared_ptr<FrameHeader> ptr = frame_;
+  frame_ = nullptr;
+  ptr->rwlatch_.unlock();
+}
 
 /** @brief The destructor for `ReadPageGuard`. This destructor simply calls `Drop()`. */
+/** @brief `ReadPageGuard` 析构函数，仅调用 `Drop()`。 */
 ReadPageGuard::~ReadPageGuard() { Drop(); }
 
 /**********************************************************************************************************************/
@@ -141,6 +245,19 @@ ReadPageGuard::~ReadPageGuard() { Drop(); }
  * @param bpm_latch A shared pointer to the buffer pool manager's latch.
  * @param disk_scheduler A shared pointer to the buffer pool manager's disk scheduler.
  */
+/**
+ * @brief 唯一能够创建有效 RAII `WritePageGuard` 的构造函数。
+ *
+ * 只有缓冲池管理器可以调用此构造函数。
+ *
+ * TODO(P1)：补充实现。
+ *
+ * @param page_id 要写入的页面的 Page ID。
+ * @param frame 指向承载目标页面的帧的共享指针。
+ * @param replacer 指向缓冲池管理器替换器的共享指针。
+ * @param bpm_latch 指向缓冲池管理器锁的共享指针。
+ * @param disk_scheduler 指向缓冲池管理器磁盘调度器的共享指针。
+ */
 WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> frame,
                                std::shared_ptr<ArcReplacer> replacer, std::shared_ptr<std::mutex> bpm_latch,
                                std::shared_ptr<DiskScheduler> disk_scheduler)
@@ -149,7 +266,10 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
       replacer_(std::move(replacer)),
       bpm_latch_(std::move(bpm_latch)),
       disk_scheduler_(std::move(disk_scheduler)) {
-  UNIMPLEMENTED("TODO(P1): Add implementation.");
+  frame_->rwlatch_.lock();
+  std::cout << "11" << '\n';
+
+  is_valid_ = true;
 }
 
 /**
@@ -157,8 +277,8 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
  *
  * ### Implementation
  *
- * If you are unfamiliar with move semantics, please familiarize yourself with learning materials online. There are many
- * great resources (including articles, Microsoft tutorials, YouTube videos) that explain this in depth.
+ * If you are unfamiliar with move semantics, please familiarize yourself with learning materials online. There are
+ * many great resources (including articles, Microsoft tutorials, YouTube videos) that explain this in depth.
  *
  * Make sure you invalidate the other guard; otherwise, you might run into double free problems! For both objects, you
  * need to update _at least_ 5 fields each.
@@ -167,30 +287,79 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
  *
  * @param that The other page guard.
  */
-WritePageGuard::WritePageGuard(WritePageGuard &&that) noexcept {}
+/**
+ * @brief `WritePageGuard` 的移动构造函数。
+ *
+ * 应先理解移动语义；必须转移至少五个字段，并使源 Guard 失效，否则可能发生资源被重复释放。
+ *
+ * TODO(P1)：补充实现。
+ *
+ * @param that 另一个 Page Guard。
+ */
+WritePageGuard::WritePageGuard(WritePageGuard &&that) noexcept {
+  page_id_ = that.page_id_;
+  frame_ = that.frame_;
+  replacer_ = that.replacer_;
+  disk_scheduler_ = that.disk_scheduler_;
+  bpm_latch_ = that.bpm_latch_;
+  that.Drop();
+  frame_->rwlatch_.lock();
+  is_valid_ = true;
+}
 
 /**
  * @brief The move assignment operator for `WritePageGuard`.
  *
  * ### Implementation
  *
- * If you are unfamiliar with move semantics, please familiarize yourself with learning materials online. There are many
- * great resources (including articles, Microsoft tutorials, YouTube videos) that explain this in depth.
+ * If you are unfamiliar with move semantics, please familiarize yourself with learning materials online. There are
+ * many great resources (including articles, Microsoft tutorials, YouTube videos) that explain this in depth.
  *
  * Make sure you invalidate the other guard; otherwise, you might run into double free problems! For both objects, you
- * need to update _at least_ 5 fields each, and for the current object, make sure you release any resources it might be
- * holding on to.
+ * need to update _at least_ 5 fields each, and for the current object, make sure you release any resources it might
+ * be holding on to.
  *
  * TODO(P1): Add implementation.
  *
  * @param that The other page guard.
  * @return WritePageGuard& The newly valid `WritePageGuard`.
  */
-auto WritePageGuard::operator=(WritePageGuard &&that) noexcept -> WritePageGuard & { return *this; }
+/**
+ * @brief `WritePageGuard` 的移动赋值运算符。
+ *
+ * 除转移至少五个字段并使源 Guard 失效外，还必须先释放当前对象可能持有的资源。
+ *
+ * TODO(P1)：补充实现。
+ *
+ * @param that 另一个 Page Guard。
+ * @return WritePageGuard& 移动后变为有效状态的当前 `WritePageGuard`。
+ */
+auto WritePageGuard::operator=(WritePageGuard &&that) noexcept -> WritePageGuard & {
+  if (is_valid_ && page_id_ == that.page_id_) {
+    return *this;
+  }
+  if (is_valid_ && page_id_ != that.page_id_) {
+    std::lock_guard<std::mutex> lock(*bpm_latch_);
+    if (frame_->pin_count_.fetch_sub(1)) {
+      replacer_->SetEvictable(frame_->frame_id_, true);
+    }
+    frame_->rwlatch_.unlock();
+  }
+  page_id_ = that.page_id_;
+  frame_ = that.frame_;
+  replacer_ = that.replacer_;
+  disk_scheduler_ = that.disk_scheduler_;
+  bpm_latch_ = that.bpm_latch_;
+  that.Drop();
+  frame_->rwlatch_.lock();
+  is_valid_ = true;
+  return *this;
+}
 
 /**
  * @brief Gets the page ID of the page this guard is protecting.
  */
+/** @brief 取得当前 Guard 所保护页面的 Page ID。 */
 auto WritePageGuard::GetPageId() const -> page_id_t {
   BUSTUB_ENSURE(is_valid_, "tried to use an invalid write guard");
   return page_id_;
@@ -199,6 +368,7 @@ auto WritePageGuard::GetPageId() const -> page_id_t {
 /**
  * @brief Gets a `const` pointer to the page of data this guard is protecting.
  */
+/** @brief 取得指向当前 Guard 所保护页面数据的只读指针。 */
 auto WritePageGuard::GetData() const -> const char * {
   BUSTUB_ENSURE(is_valid_, "tried to use an invalid write guard");
   return frame_->GetData();
@@ -207,6 +377,7 @@ auto WritePageGuard::GetData() const -> const char * {
 /**
  * @brief Gets a mutable pointer to the page of data this guard is protecting.
  */
+/** @brief 取得指向当前 Guard 所保护页面数据的可写指针。 */
 auto WritePageGuard::GetDataMut() -> char * {
   BUSTUB_ENSURE(is_valid_, "tried to use an invalid write guard");
   return frame_->GetDataMut();
@@ -215,17 +386,30 @@ auto WritePageGuard::GetDataMut() -> char * {
 /**
  * @brief Returns whether the page is dirty (modified but not flushed to the disk).
  */
+/** @brief 返回页面是否为脏页，即是否已修改但尚未刷新到磁盘。 */
 auto WritePageGuard::IsDirty() const -> bool {
   BUSTUB_ENSURE(is_valid_, "tried to use an invalid write guard");
   return frame_->is_dirty_;
 }
 
+auto WritePageGuard::SingleRequest(bool is_write) -> std::future<bool> {
+  std::promise<bool> promise = disk_scheduler_->CreatePromise();
+  std::future<bool> future = promise.get_future();
+  std::vector<DiskRequest> reqs;
+  reqs.emplace_back(DiskRequest{is_write, frame_->GetDataMut(), frame_->page_id_, std::move(promise)});
+  disk_scheduler_->Schedule(reqs);
+  return future;
+}
 /**
  * @brief Flushes this page's data safely to disk.
  *
  * TODO(P1): Add implementation.
  */
-void WritePageGuard::Flush() { UNIMPLEMENTED("TODO(P1): Add implementation."); }
+/** @brief 安全地把该页面的数据刷新到磁盘。TODO(P1)：补充实现。 */
+void WritePageGuard::Flush() {
+  BUSTUB_ENSURE(is_valid_, "tried to use an invalid page guard");
+  SingleRequest(true).get();
+}
 
 /**
  * @brief Manually drops a valid `WritePageGuard`'s data. If this guard is invalid, this function does nothing.
@@ -238,9 +422,30 @@ void WritePageGuard::Flush() { UNIMPLEMENTED("TODO(P1): Add implementation."); }
  *
  * TODO(P1): Add implementation.
  */
-void WritePageGuard::Drop() { UNIMPLEMENTED("TODO(P1): Add implementation."); }
+/**
+ * @brief 手工释放有效 `WritePageGuard` 的资源；Guard 无效时不做任何事。必须避免重复释放，并仔细考虑所拥有
+ * 的资源及其释放顺序；顺序错误很可能导致后续测试失败。在特定情况下可能还需要获取缓冲池管理器的锁。
+ * TODO(P1)：补充实现。
+ */
+void WritePageGuard::Drop() {
+  if (!is_valid_) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(*bpm_latch_);
+  if (frame_->pin_count_.fetch_sub(1) == 1) {
+    replacer_->SetEvictable(frame_->frame_id_, true);
+  }
+  is_valid_ = false;
+  replacer_ = nullptr;
+  disk_scheduler_ = nullptr;
+  bpm_latch_ = nullptr;
+  std::shared_ptr<FrameHeader> ptr = frame_;
+  frame_ = nullptr;
+  ptr->rwlatch_.unlock();
+}
 
 /** @brief The destructor for `WritePageGuard`. This destructor simply calls `Drop()`. */
+/** @brief `WritePageGuard` 析构函数，仅调用 `Drop()`。 */
 WritePageGuard::~WritePageGuard() { Drop(); }
 
 }  // namespace bustub

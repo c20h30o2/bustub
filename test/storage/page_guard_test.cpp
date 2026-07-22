@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include <cstdio>
+#include <iostream>
 
 #include "buffer/buffer_pool_manager.h"
 #include "storage/disk/disk_manager_memory.h"
@@ -27,14 +28,19 @@ TEST(PageGuardTest, DISABLED_DropTest) {
   auto bpm = std::make_shared<BufferPoolManager>(FRAMES, disk_manager.get());
 
   {
+      std::cout<<"1"<<'\n';
     const auto pid0 = bpm->NewPage();
+      std::cout<<"2"<<'\n';
     auto page0 = bpm->WritePage(pid0);
 
     // The page should be pinned.
+      std::cout<<"3"<<'\n';
     ASSERT_EQ(1, bpm->GetPinCount(pid0));
 
     // A drop should unpin the page.
+      std::cout<<"4"<<'\n';
     page0.Drop();
+      std::cout<<"5"<<'\n';
     ASSERT_EQ(0, bpm->GetPinCount(pid0));
 
     // Another drop should have no effect.

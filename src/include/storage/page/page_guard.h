@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <future>
 #include <memory>
 
 #include "buffer/arc_replacer.h"
@@ -33,8 +34,14 @@ class FrameHeader;
  * With `ReadPageGuard`s, there can be multiple threads that share read access to a page's data. However, the existence
  * of any `ReadPageGuard` on a page implies that no thread can be mutating the page's data.
  */
+/**
+ * @brief `ReadPageGuard` 是授予页面线程安全只读访问权的 RAII 对象。BusTub 只能通过 Page Guard 操作缓冲池
+ * 页面数据，因此系统无需手工加锁和解锁。多个线程可以同时持有同一页面的读 Guard，但只要存在任一读
+ * Guard，就不能有线程修改该页面。
+ */
 class ReadPageGuard {
   /** @brief Only the buffer pool manager is allowed to construct a valid `ReadPageGuard.` */
+  /** @brief 只有缓冲池管理器可以构造有效的 `ReadPageGuard`。 */
   friend class BufferPoolManager;
 
  public:
@@ -48,6 +55,11 @@ class ReadPageGuard {
    * **Use of an uninitialized page guard is undefined behavior.**
    *
    * In other words, the only way to get a valid `ReadPageGuard` is through the buffer pool manager.
+   */
+  /**
+   * @brief 默认构造的读 Guard 不能直接使用。提供默认构造函数只是为了先在栈上放置一个“未初始化”Guard，
+   * 之后再通过移动赋值写入有效 Guard。使用未初始化 Guard 属于未定义行为；有效 Guard 只能由缓冲池管理器
+   * 创建。
    */
   ReadPageGuard() = default;
 
@@ -67,11 +79,14 @@ class ReadPageGuard {
   ~ReadPageGuard();
 
  private:
+  auto SingleRequest(bool is_write) -> std::future<bool>;
   /** @brief Only the buffer pool manager is allowed to construct a valid `ReadPageGuard.` */
+  /** @brief 只有缓冲池管理器可以调用此构造函数创建有效 Guard。 */
   explicit ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> frame, std::shared_ptr<ArcReplacer> replacer,
                          std::shared_ptr<std::mutex> bpm_latch, std::shared_ptr<DiskScheduler> disk_scheduler);
 
   /** @brief The page ID of the page we are guarding. */
+  /** @brief 当前 Guard 所保护页面的 Page ID。 */
   page_id_t page_id_;
 
   /**
@@ -79,6 +94,7 @@ class ReadPageGuard {
    *
    * Almost all operations of this page guard should be done via this shared pointer to a `FrameHeader`.
    */
+  /** @brief 承载受保护页面的帧；Page Guard 的绝大多数操作应通过这个 `FrameHeader` 共享指针完成。 */
   std::shared_ptr<FrameHeader> frame_;
 
   /**
@@ -87,6 +103,7 @@ class ReadPageGuard {
    * Since the buffer pool cannot know when this `ReadPageGuard` gets destructed, we maintain a pointer to the buffer
    * pool's replacer in order to set the frame as evictable on destruction.
    */
+  /** @brief 缓冲池替换器的共享指针；Guard 析构时用它把相应帧设置为可驱逐。 */
   std::shared_ptr<ArcReplacer> replacer_;
 
   /**
@@ -95,6 +112,7 @@ class ReadPageGuard {
    * Since the buffer pool cannot know when this `ReadPageGuard` gets destructed, we maintain a pointer to the buffer
    * pool's latch for when we need to update the frame's eviction state in the buffer pool replacer.
    */
+  /** @brief 缓冲池锁的共享指针；更新帧在替换器中的驱逐状态时用于保护缓冲池状态。 */
   std::shared_ptr<std::mutex> bpm_latch_;
 
   /**
@@ -102,6 +120,7 @@ class ReadPageGuard {
    *
    * Used when flushing pages to disk.
    */
+  /** @brief 缓冲池磁盘调度器的共享指针，用于把页面刷新到磁盘。 */
   std::shared_ptr<DiskScheduler> disk_scheduler_;
 
   /**
@@ -114,6 +133,10 @@ class ReadPageGuard {
    * If we did not maintain this flag, then the move constructor / move assignment operators could attempt to destruct
    * or `Drop()` invalid members, causing a segmentation fault.
    */
+  /**
+   * @brief Guard 有效性标志。默认构造将其设为 `false`，用于防止移动操作、析构或 `Drop()` 对无效成员重复
+   * 释放并造成段错误。
+   */
   bool is_valid_{false};
 
   /**
@@ -122,6 +145,7 @@ class ReadPageGuard {
    * If you want extra (nonexistent) style points, and you want to be extra fancy, then you can look into the
    * `std::shared_lock` type and use that for the latching mechanism instead of manually calling `lock` and `unlock`.
    */
+  /** @brief 可添加必要字段；也可研究 `std::shared_lock`，用 RAII 代替手工 `lock`／`unlock`。 */
 };
 
 /**
@@ -135,8 +159,13 @@ class ReadPageGuard {
  * of a `WritePageGuard` implies that no other `WritePageGuard` or any `ReadPageGuard`s for the same page can exist at
  * the same time.
  */
+/**
+ * @brief `WritePageGuard` 是授予页面线程安全写访问权的 RAII 对象。写 Guard 对页面拥有独占权，持有者可以
+ * 修改页面；同一时刻同一页面不能再存在其他写 Guard 或任何读 Guard。
+ */
 class WritePageGuard {
   /** @brief Only the buffer pool manager is allowed to construct a valid `WritePageGuard.` */
+  /** @brief 只有缓冲池管理器可以构造有效的 `WritePageGuard`。 */
   friend class BufferPoolManager;
 
  public:
@@ -150,6 +179,10 @@ class WritePageGuard {
    * **Use of an uninitialized page guard is undefined behavior.**
    *
    * In other words, the only way to get a valid `WritePageGuard` is through the buffer pool manager.
+   */
+  /**
+   * @brief 默认构造的写 Guard 不能直接使用，仅用于创建“未初始化”Guard 后再移动赋值。使用未初始化 Guard
+   * 属于未定义行为；有效 Guard 只能由缓冲池管理器创建。
    */
   WritePageGuard() = default;
 
@@ -174,11 +207,14 @@ class WritePageGuard {
   ~WritePageGuard();
 
  private:
+  auto SingleRequest(bool is_write) -> std::future<bool>;
   /** @brief Only the buffer pool manager is allowed to construct a valid `WritePageGuard.` */
+  /** @brief 只有缓冲池管理器可以调用此构造函数创建有效 Guard。 */
   explicit WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> frame, std::shared_ptr<ArcReplacer> replacer,
                           std::shared_ptr<std::mutex> bpm_latch, std::shared_ptr<DiskScheduler> disk_scheduler);
 
   /** @brief The page ID of the page we are guarding. */
+  /** @brief 当前 Guard 所保护页面的 Page ID。 */
   page_id_t page_id_;
 
   /**
@@ -186,6 +222,7 @@ class WritePageGuard {
    *
    * Almost all operations of this page guard should be done via this shared pointer to a `FrameHeader`.
    */
+  /** @brief 承载受保护页面的帧；Page Guard 的绝大多数操作应通过这个 `FrameHeader` 共享指针完成。 */
   std::shared_ptr<FrameHeader> frame_;
 
   /**
@@ -194,6 +231,7 @@ class WritePageGuard {
    * Since the buffer pool cannot know when this `WritePageGuard` gets destructed, we maintain a pointer to the buffer
    * pool's replacer in order to set the frame as evictable on destruction.
    */
+  /** @brief 缓冲池替换器的共享指针；Guard 析构时用它把相应帧设置为可驱逐。 */
   std::shared_ptr<ArcReplacer> replacer_;
 
   /**
@@ -202,6 +240,7 @@ class WritePageGuard {
    * Since the buffer pool cannot know when this `WritePageGuard` gets destructed, we maintain a pointer to the buffer
    * pool's latch for when we need to update the frame's eviction state in the buffer pool replacer.
    */
+  /** @brief 缓冲池锁的共享指针；更新帧在替换器中的驱逐状态时用于保护缓冲池状态。 */
   std::shared_ptr<std::mutex> bpm_latch_;
 
   /**
@@ -209,6 +248,7 @@ class WritePageGuard {
    *
    * Used when flushing pages to disk.
    */
+  /** @brief 缓冲池磁盘调度器的共享指针，用于把页面刷新到磁盘。 */
   std::shared_ptr<DiskScheduler> disk_scheduler_;
 
   /**
@@ -221,6 +261,7 @@ class WritePageGuard {
    * If we did not maintain this flag, then the move constructor / move assignment operators could attempt to destruct
    * or `Drop()` invalid members, causing a segmentation fault.
    */
+  /** @brief Guard 有效性标志，用于防止移动、析构或 `Drop()` 对无效成员重复释放。 */
   bool is_valid_{false};
 
   /**
@@ -229,6 +270,7 @@ class WritePageGuard {
    * If you want extra (nonexistent) style points, and you want to be extra fancy, then you can look into the
    * `std::unique_lock` type and use that for the latching mechanism instead of manually calling `lock` and `unlock`.
    */
+  /** @brief 可添加必要字段；也可研究 `std::unique_lock`，用 RAII 代替手工 `lock`／`unlock`。 */
 };
 
 }  // namespace bustub
