@@ -187,7 +187,11 @@ auto BufferPoolManager::NewPage() -> page_id_t { return next_page_id_.fetch_add(
 auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   auto iter = page_table_.find(page_id);
-  if (iter == page_table_.end() || frames_[iter->second]->pin_count_ != 0) {
+  if (iter == page_table_.end()) {
+    disk_scheduler_->DeallocatePage(page_id);
+    return true;
+  }
+  if (frames_[iter->second]->pin_count_ != 0) {
     return false;
   }
   std::shared_ptr<FrameHeader> ptr = frames_[iter->second];
@@ -274,7 +278,7 @@ auto BufferPoolManager::GetOrLoadPage(page_id_t page_id, AccessType access_type)
   frame_id_t next = 0;
   if (auto iter = page_table_.find(page_id); iter != page_table_.end()) {
     next = iter->second;
-  } else if (free_frames_.size() > 0) {
+  } else if (!free_frames_.empty()) {
     next = free_frames_.front();
     free_frames_.pop_front();
     SingleRequest(false, next, page_id).get();
@@ -282,6 +286,7 @@ auto BufferPoolManager::GetOrLoadPage(page_id_t page_id, AccessType access_type)
     if (std::optional<frame_id_t> op = replacer_->Evict(); op.has_value()) {
       next = op.value();
       std::shared_ptr<FrameHeader> ptr = frames_[next];
+      page_table_.erase(ptr->page_id_);
       if (ptr->is_dirty_) {
         SingleRequest(true, next, ptr->page_id_).get();
       }
@@ -299,14 +304,17 @@ auto BufferPoolManager::GetOrLoadPage(page_id_t page_id, AccessType access_type)
   return next;
 }
 auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_type) -> std::optional<WritePageGuard> {
-  std::lock_guard<std::mutex> lock(*bpm_latch_);
-        std::cout<<"7"<<'\n';
-  std::optional<frame_id_t> op = GetOrLoadPage(page_id, access_type);
-        std::cout<<"8"<<'\n';
+  std::optional<frame_id_t> op;
+  {
+    std::lock_guard<std::mutex> lock(*bpm_latch_);
+    // std::cout << "7" << '\n';
+    op = GetOrLoadPage(page_id, access_type);
+  }
+  // std::cout << "8" << '\n';
   if (!op.has_value()) {
     return std::nullopt;
   }
-          std::cout<<"9"<<'\n';
+  // std::cout << "9" << '\n';
 
   return WritePageGuard(page_id, frames_[op.value()], replacer_, bpm_latch_, disk_scheduler_);
 }
@@ -380,9 +388,9 @@ auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_typ
  * 它只应用于测试和简化调用。只要缓冲池存在内存耗尽的可能，就应使用可处理失败的 Checked 接口。
  */
 auto BufferPoolManager::WritePage(page_id_t page_id, AccessType access_type) -> WritePageGuard {
-      std::cout<<"5"<<'\n';
+  // std::cout << "5" << '\n';
   auto guard_opt = CheckedWritePage(page_id, access_type);
-      std::cout<<"6"<<'\n';
+  // std::cout << "6" << '\n';
 
   if (!guard_opt.has_value()) {
     fmt::println(stderr, "\n`CheckedWritePage` failed to bring in page {}\n", page_id);

@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "buffer/arc_replacer.h"
+#include <algorithm>
 #include <cassert>
 #include <memory>
 #include <mutex>
@@ -149,16 +150,14 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
     if (iter->second->arc_status_ == ArcStatus::MRU_GHOST) {
       // std::cout << "record hit mru_ghost, frame:" << frame_id << " page:" << page_id << " curr_size:" << curr_size_
       //           << '\n';
-      if (mru_target_size_ < replacer_size_) {
-        ++mru_target_size_;
-      }
+      const auto delta = std::max<size_t>(1, mfu_ghost_.size() / mru_ghost_.size());
+      mru_target_size_ = std::min(replacer_size_, mru_target_size_ + delta);
       mru_ghost_.erase(ptr->ghost_iter_);
     } else {
       // std::cout << "record hit mfu_ghost_, frame:" << frame_id << " page:" << page_id << " curr_size:" << curr_size_
       //           << '\n';
-      if (mru_target_size_ > 0) {
-        --mru_target_size_;
-      }
+      const auto delta = std::max<size_t>(1, mru_ghost_.size() / mfu_ghost_.size());
+      mru_target_size_ = delta >= mru_target_size_ ? 0 : mru_target_size_ - delta;
       mfu_ghost_.erase(ptr->ghost_iter_);
     }
     ptr->alive_iter_ = mfu_.begin();

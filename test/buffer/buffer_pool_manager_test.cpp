@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <iostream>
 
 #include "buffer/buffer_pool_manager.h"
 #include "gtest/gtest.h"
@@ -335,6 +336,7 @@ TEST(BufferPoolManagerTest, DISABLED_DeadlockTest) {
 
     // Attempt to write to page 0.
     const auto guard0 = bpm->WritePage(pid0);
+    // std::cout<<"test pid0\n";
   });
 
   // Wait for the other thread to begin before we start the test.
@@ -350,6 +352,7 @@ TEST(BufferPoolManagerTest, DISABLED_DeadlockTest) {
 
   // While holding page 0, take the latch on page 1.
   const auto guard1 = bpm->WritePage(pid1);
+  // std::cout<<"test pid1\n";
 
   // Let the child thread have the page 0 since we're done with it.
   guard0.Drop();
