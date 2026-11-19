@@ -30,10 +30,12 @@ enum class ArcStatus { MRU, MFU, MRU_GHOST, MFU_GHOST };
 
 // TODO(student): You can modify or remove this struct as you like.
 struct FrameStatus {
+  // 驻留时以 frame_id 查找；成为 ghost 后 frame 可被复用，只能用 page_id 识别原页面。
   page_id_t page_id_;
   frame_id_t frame_id_;
   bool evictable_;
   ArcStatus arc_status_;
+  // status 决定迭代器属于哪一个列表；配合 map 可以直接定位并删除，无需遍历找节点。
   std::list<frame_id_t>::iterator alive_iter_;
   std::list<page_id_t>::iterator ghost_iter_;
   FrameStatus(page_id_t pid, frame_id_t fid, bool ev, ArcStatus st)
@@ -64,6 +66,7 @@ class ArcReplacer {
 
  private:
   // TODO(student): implement me! You can replace or remove these member variables as you like.
+  // 四个列表均把最新项放在表头，最旧项在表尾。ghost 只存历史身份，不保存页面数据。
   std::list<frame_id_t> mru_;
   std::list<frame_id_t> mfu_;
   std::list<page_id_t> mru_ghost_;
@@ -79,8 +82,10 @@ class ArcReplacer {
   std::unordered_map<page_id_t, std::shared_ptr<FrameStatus>> ghost_map_;
 
   /* alive, evictable entries count */
+  // Size() 返回这个可驱逐数量，而非驻留数量或四个列表的总长度。
   [[maybe_unused]] size_t curr_size_{0};
   /* p as in original paper */
+  // MRU 的目标大小而非硬容量；值越大越偏向保留最近首次访问的页面。
   [[maybe_unused]] size_t mru_target_size_{0};
   /* c as in original paper */
   [[maybe_unused]] size_t replacer_size_;

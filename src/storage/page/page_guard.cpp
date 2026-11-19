@@ -26,6 +26,10 @@
 
 namespace bustub {
 
+// Guard 管理的是一次 pin 和页面锁的释放责任；shared_ptr 只管理相关对象的存活时间。
+// BPM 在调用构造函数之前已增加 pin，Guard 不重复增加；移动也不会产生新的 pin。
+// 复习顺序：构造 → GetData/GetDataMut → Drop/析构 → 移动构造/赋值 → Flush。
+
 /**
  * @brief The only constructor for an RAII `ReadPageGuard` that creates a valid guard.
  *
@@ -60,6 +64,7 @@ ReadPageGuard::ReadPageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> fra
       replacer_(std::move(replacer)),
       bpm_latch_(std::move(bpm_latch)),
       disk_scheduler_(std::move(disk_scheduler)) {
+  // 共享锁允许多个读者。先成功取得锁，再声明 Guard 有效并承担解锁责任。
   frame_->rwlatch_.lock_shared();
   is_valid_ = true;
   // std::cout << std::this_thread::get_id() << " read guard construct success" << '\n';
@@ -96,6 +101,7 @@ ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept
       bpm_latch_(std::move(that.bpm_latch_)),
       disk_scheduler_(std::move(that.disk_scheduler_)),
       is_valid_(std::exchange(that.is_valid_, false)) {
+  // 不重新加锁，也不调用 that.Drop()；只转交已有锁和 pin 的责任，源析构变为空操作。
   // std::cout << std::this_thread::get_id() << "read guard move construct success" << '\n';
 }
 
@@ -127,6 +133,8 @@ ReadPageGuard::ReadPageGuard(ReadPageGuard &&that) noexcept
  * @return ReadPageGuard& 移动后变为有效状态的当前 `ReadPageGuard`。
  */
 auto ReadPageGuard::operator=(ReadPageGuard &&that) noexcept -> ReadPageGuard & {
+  // 移动赋值与移动构造不同：目标可能已持有另一页，必须先释放目标原有锁和 pin。
+  // 阅读注意：当前用 page_id 相等提前返回，并不等价于 this == &that 的自移动判断。
   if (is_valid_ && page_id_ == that.page_id_) {
     return *this;
   }
@@ -182,6 +190,7 @@ auto ReadPageGuard::IsDirty() const -> bool {
  */
 /** @brief 安全地把该页面的数据刷新到磁盘。TODO(P1)：补充实现。 */
 auto ReadPageGuard::SingleRequest(bool is_write) -> std::future<bool> {
+  // 与 BPM 的请求封装相同，但页面身份和数据直接取自本 Guard 所保护的 frame。
   std::promise<bool> promise = disk_scheduler_->CreatePromise();
   std::future<bool> future = promise.get_future();
   std::vector<DiskRequest> reqs;
@@ -191,6 +200,8 @@ auto ReadPageGuard::SingleRequest(bool is_write) -> std::future<bool> {
 }
 void ReadPageGuard::Flush() {
   BUSTUB_ENSURE(is_valid_, "tried to use an invalid page guard");
+  // 读 Guard 也能写回已有数据：不修改页面内容，只把当前字节交给磁盘。
+  // 当前实现总是写回，且不清除 is_dirty_；不要将这里理解成完整的 dirty 状态转换。
   SingleRequest(true).get();
 }
 
@@ -212,10 +223,13 @@ void ReadPageGuard::Flush() {
  */
 void ReadPageGuard::Drop() {
   if (!is_valid_) {
+    // 允许显式 Drop 后再析构，也允许移动后的源对象正常析构。
     return;
   }
+  // 先释放页面锁，再申请 BPM 锁；这段间隙 pin 仍大于零，frame 不会被淘汰。
   frame_->rwlatch_.unlock_shared();
   std::lock_guard<std::mutex> lock(*bpm_latch_);
+  // fetch_sub 返回旧值，旧值为 1 才表示本次释放了最后一个 pin。
   if (frame_->pin_count_.fetch_sub(1) == 1) {
     replacer_->SetEvictable(frame_->frame_id_, true);
   }
@@ -271,6 +285,7 @@ WritePageGuard::WritePageGuard(page_id_t page_id, std::shared_ptr<FrameHeader> f
       replacer_(std::move(replacer)),
       bpm_latch_(std::move(bpm_latch)),
       disk_scheduler_(std::move(disk_scheduler)) {
+  // 独占锁排斥其他读者/写者；取得写 Guard 本身不代表内容已经修改。
   frame_->rwlatch_.lock();
   // std::cout << "11" << '\n';
   is_valid_ = true;
@@ -308,6 +323,7 @@ WritePageGuard::WritePageGuard(WritePageGuard &&that) noexcept
       bpm_latch_(std::move(that.bpm_latch_)),
       disk_scheduler_(std::move(that.disk_scheduler_)),
       is_valid_(std::exchange(that.is_valid_, false)) {
+  // 与读 Guard 相同，转移现有独占锁的释放责任；再次 lock 会导致同线程重复加锁。
   // std::cout << std::this_thread::get_id() << "write guard move construct success" << '\n';
 }
 
@@ -339,6 +355,7 @@ WritePageGuard::WritePageGuard(WritePageGuard &&that) noexcept
  * @return WritePageGuard& 移动后变为有效状态的当前 `WritePageGuard`。
  */
 auto WritePageGuard::operator=(WritePageGuard &&that) noexcept -> WritePageGuard & {
+  // 先释放目标旧资源，再接管源资源；这里也保留了按 page_id 相等提前返回的现有行为。
   if (is_valid_ && page_id_ == that.page_id_) {
     return *this;
   }
@@ -383,6 +400,7 @@ auto WritePageGuard::GetData() const -> const char * {
 /** @brief 取得指向当前 Guard 所保护页面数据的可写指针。 */
 auto WritePageGuard::GetDataMut() -> char * {
   BUSTUB_ENSURE(is_valid_, "tried to use an invalid write guard");
+  // 交出可写指针后无法跟踪调用者是否实际写入，因此保守地把页面标记为 dirty。
   frame_->is_dirty_ = true;
   return frame_->GetDataMut();
 }
@@ -412,7 +430,8 @@ auto WritePageGuard::SingleRequest(bool is_write) -> std::future<bool> {
 /** @brief 安全地把该页面的数据刷新到磁盘。TODO(P1)：补充实现。 */
 void WritePageGuard::Flush() {
   BUSTUB_ENSURE(is_valid_, "tried to use an invalid page guard");
-  // writepageguard hold uniquelock,always safe to flush
+  // Guard 已持有独占页面锁，无需再次加锁；等待 I/O 完成期间保持锁和 pin。
+  // 与读 Guard 一样，当前 Flush 不清除 dirty 标志，之后可能再次写回。
   SingleRequest(true).get();
 }
 
@@ -436,6 +455,8 @@ void WritePageGuard::Drop() {
   if (!is_valid_) {
     return;
   }
+  // 解锁不等于立即驱逐。之后在 BPM 锁下减少 pin，最后一个 pin 才开启驱逐资格。
+  // Drop 不自动刷盘；dirty 数据留在缓冲池，交给显式 Flush 或后续驱逐处理。
   frame_->rwlatch_.unlock();
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (frame_->pin_count_.fetch_sub(1) == 1) {

@@ -21,6 +21,9 @@
 
 namespace bustub {
 
+// 复习顺序：RecordAccess → SetEvictable/Size → Evict → 两个 EvictFrom* → Remove。
+// ARC 只维护替换策略，不负责读取磁盘、更新 BPM 页表或清空 frame。
+
 /**
  *
  * TODO(P1): Add implementation
@@ -49,17 +52,20 @@ ArcReplacer::ArcReplacer(size_t num_frames) : replacer_size_(num_frames) {}
  * @return frame id of the evicted frame, or std::nullopt if cannot evict
  */
 auto ArcReplacer::EvictFromMru() -> std::optional<frame_id_t> {
+  // 调用者 Evict 已持有 latch_。从最旧端向前找，跳过仍被使用的 frame。
   for (auto iter = mru_.rbegin(); iter != mru_.rend(); ++iter) {
     if (alive_map_[*iter]->evictable_) {
       // std::cout << "curr_size:" << curr_size_ << " evict:" << *iter << '\n';
       --curr_size_;
       auto ptr = alive_map_[*iter];
+      // 淘汰只把活跃记录转成 ghost；保留 page_id，用于未来再次访问时调整策略。
       mru_ghost_.emplace_front(ptr->page_id_);
       ptr->arc_status_ = ArcStatus::MRU_GHOST;
       ptr->ghost_iter_ = mru_ghost_.begin();
       ptr->evictable_ = true;
       ghost_map_[ptr->page_id_] = ptr;
       alive_map_.erase(*iter);
+      // reverse_iterator::base() 指向当前元素的后一个位置，删除前需向前移动一格。
       mru_.erase(--iter.base());
       return ptr->frame_id_;
     }
@@ -67,6 +73,7 @@ auto ArcReplacer::EvictFromMru() -> std::optional<frame_id_t> {
   return std::nullopt;
 }
 auto ArcReplacer::EvictFromMfu() -> std::optional<frame_id_t> {
+  // 与 MRU 分支对称：MFU 淘汰项进入 MFU ghost，不交叉放入另一个历史列表。
   for (auto iter = mfu_.rbegin(); iter != mfu_.rend(); ++iter) {
     if (alive_map_[*iter]->evictable_) {
       // std::cout << curr_size_ << " evict:" << *iter << '\n';
@@ -86,6 +93,8 @@ auto ArcReplacer::EvictFromMfu() -> std::optional<frame_id_t> {
 }
 auto ArcReplacer::Evict() -> std::optional<frame_id_t> {
   std::lock_guard<std::mutex> lock(latch_);
+  // 比较的是 MRU 的全部驻留项数量（包括 pinned 项）。达到目标时优先淘汰 MRU；
+  // 首选列表全被 pin 时再尝试另一侧，两侧均无候选者才返回 nullopt。
   if (mru_.size() >= mru_target_size_) {
     if (auto op = EvictFromMru(); op.has_value()) {
       return op;
@@ -129,6 +138,7 @@ auto ArcReplacer::Evict() -> std::optional<frame_id_t> {
  */
 void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_unused]] AccessType access_type) {
   std::lock_guard<std::mutex> lock(latch_);
+  // 情况一：驻留命中。再次访问 MRU 会升级到 MFU；访问 MFU 则刷新其最近访问顺序。
   if (auto iter = alive_map_.find(frame_id); iter != alive_map_.end() && iter->second->page_id_ == page_id) {
     if (iter->second->arc_status_ == ArcStatus::MRU) {
       // std::cout << "record hit mru, frame:" << frame_id << " page:" << page_id << " curr_size:" << curr_size_ <<
@@ -144,6 +154,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
     // } else if (auto iter = ghost_map_.find(page_id); iter != ghost_map_.end() && iter->second->page_id_==frame_id)
     // {
   } else if (auto iter = ghost_map_.find(page_id); iter != ghost_map_.end()) {
+    // 情况二/三：命中历史记录。BPM 已提供重新加载所用的 frame，此处恢复为 MFU。
     auto ptr = iter->second;
     ptr->frame_id_ = frame_id;
     mfu_.emplace_front(ptr->frame_id_);
@@ -151,21 +162,25 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
       // std::cout << "record hit mru_ghost, frame:" << frame_id << " page:" << page_id << " curr_size:" << curr_size_
       //           << '\n';
       const auto delta = std::max<size_t>(1, mfu_ghost_.size() / mru_ghost_.size());
+      // MRU 历史命中说明最近型页面值得多留一些。比例要在删除 ghost 项之前计算。
       mru_target_size_ = std::min(replacer_size_, mru_target_size_ + delta);
       mru_ghost_.erase(ptr->ghost_iter_);
     } else {
       // std::cout << "record hit mfu_ghost_, frame:" << frame_id << " page:" << page_id << " curr_size:" << curr_size_
       //           << '\n';
       const auto delta = std::max<size_t>(1, mru_ghost_.size() / mfu_ghost_.size());
+      // MFU 历史命中则降低 MRU 目标；size_t 无符号，先比较再减，避免下溢。
       mru_target_size_ = delta >= mru_target_size_ ? 0 : mru_target_size_ - delta;
       mfu_ghost_.erase(ptr->ghost_iter_);
     }
     ptr->alive_iter_ = mfu_.begin();
     ptr->arc_status_ = ArcStatus::MFU;
+    // 重新驻留不继承旧的可驱逐状态；BPM/Guard 负责根据 pin count 切换状态。
     ptr->evictable_ = false;
     alive_map_[ptr->frame_id_] = ptr;
     ghost_map_.erase(iter);
   } else {
+    // 情况四：全新页面进入 MRU。先裁剪最旧 ghost，限制历史元数据占用。
     // std::cout << "record hit empty, frame:" << frame_id << " page:" << page_id << " curr_size:" << curr_size_ <<
     // '\n';
     auto ptr = std::make_shared<FrameStatus>(page_id, frame_id, false, ArcStatus::MRU);
@@ -203,6 +218,7 @@ void ArcReplacer::RecordAccess(frame_id_t frame_id, page_id_t page_id, [[maybe_u
  */
 void ArcReplacer::SetEvictable(frame_id_t frame_id, bool set_evictable) {
   std::lock_guard<std::mutex> lock(latch_);
+  // 只有状态真正翻转时才调整 curr_size_，重复设置相同值不能重复计数。
   // std::cout << "set_evictable:frame_id:" << frame_id << " able:" << set_evictable << '\n';
   if (auto iter = alive_map_.find(frame_id); iter != alive_map_.end()) {
     if (!set_evictable && iter->second->evictable_) {
@@ -233,6 +249,7 @@ void ArcReplacer::SetEvictable(frame_id_t frame_id, bool set_evictable) {
  * @param frame_id id of frame to be removed
  */
 void ArcReplacer::Remove(frame_id_t frame_id) {
+  // 显式删除不同于缓存淘汰：直接移除活跃记录，不再为这次删除生成 ghost。
   std::lock_guard<std::mutex> lock(latch_);
   auto iter = alive_map_.find(frame_id);
   if (iter == alive_map_.end()) {

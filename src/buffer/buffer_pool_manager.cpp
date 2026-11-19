@@ -26,6 +26,10 @@
 
 namespace bustub {
 
+// 复习主线：FrameHeader/构造函数 → NewPage → SingleRequest → GetOrLoadPage → Checked*Page。
+// 然后跳到 page_guard.cpp 看页面使用和释放，最后回来读 DeletePage、Flush*、GetPinCount。
+// page_table_ 只记录当前驻留的 page_id → frame_id；它不是所有磁盘页面的目录。
+
 /**
  * @brief The constructor for a `FrameHeader` that initializes all fields to default values.
  *
@@ -57,6 +61,7 @@ auto FrameHeader::GetDataMut() -> char * { return data_.data(); }
  */
 /** @brief 重置 `FrameHeader` 的成员字段。 */
 void FrameHeader::Reset() {
+  // 复用前清零页面字节和状态；调用方须保证无人使用该帧，并维护旧、新页表映射。
   std::fill(data_.begin(), data_.end(), 0);
   pin_count_.store(0);
   is_dirty_ = false;
@@ -151,6 +156,7 @@ auto BufferPoolManager::Size() const -> size_t { return num_frames_; }
  *
  * @return 新分配页面的 Page ID。
  */
+// fetch_add 返回递增前的值；这里只分配页面身份，实际占用 frame 在后续访问时发生。
 auto BufferPoolManager::NewPage() -> page_id_t { return next_page_id_.fetch_add(1); }
 
 /**
@@ -188,13 +194,16 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   auto iter = page_table_.find(page_id);
   if (iter == page_table_.end()) {
+    // 不驻留不等于没有磁盘页：即使已被驱逐，删除请求仍须到达磁盘管理器。
     disk_scheduler_->DeallocatePage(page_id);
     return true;
   }
   if (frames_[iter->second]->pin_count_ != 0) {
+    // 仍有使用者（也可能正在等待页面锁），不能删除或复用其 frame。
     return false;
   }
   std::shared_ptr<FrameHeader> ptr = frames_[iter->second];
+  // 无 pin 后才能删除映射、归还 frame 并移除 ARC 活跃记录；删除无需回写旧脏数据。
   page_table_.erase(page_id);
   free_frames_.push_back(ptr->frame_id_);
   replacer_->Remove(ptr->frame_id_);
@@ -264,21 +273,25 @@ auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
  * @return 可选的锁 Guard；没有空闲帧时返回 `nullopt`，否则返回保证页面独占可写访问的 `WritePageGuard`。
  */
 
-// call after lock
+// 调用前持有 bpm_latch_，并保证传入 frame 在 I/O 完成前不会被复用。
 auto BufferPoolManager::SingleRequest(bool is_write, frame_id_t frame_id, page_id_t page_id) -> std::future<bool> {
   std::promise<bool> promise = disk_scheduler_->CreatePromise();
+  // 先取得等待端，再把完成端 promise 移入请求；不能返回已被移走的 promise。
   std::future<bool> future = promise.get_future();
   std::vector<DiskRequest> reqs;
+  // 不使用 vector 的 initializer_list 构造：它要求从 const 元素拷贝，而 promise 不可拷贝。
   reqs.emplace_back(DiskRequest{is_write, frames_[frame_id]->GetDataMut(), page_id, std::move(promise)});
   disk_scheduler_->Schedule(reqs);
   return future;
 }
-// call after lock
+// 调用前持有 bpm_latch_：查表、选择 frame、建立映射和 pin 必须作为整体协调。
 auto BufferPoolManager::GetOrLoadPage(page_id_t page_id, AccessType access_type) -> std::optional<frame_id_t> {
   frame_id_t next = 0;
   if (auto iter = page_table_.find(page_id); iter != page_table_.end()) {
+    // 命中已有驻留页，不需要磁盘读取。
     next = iter->second;
   } else if (!free_frames_.empty()) {
+    // 使用预先分配的空闲 frame，而不是为每次缺页创建新的 FrameHeader。
     next = free_frames_.front();
     free_frames_.pop_front();
     SingleRequest(false, next, page_id).get();
@@ -286,21 +299,26 @@ auto BufferPoolManager::GetOrLoadPage(page_id_t page_id, AccessType access_type)
     if (std::optional<frame_id_t> op = replacer_->Evict(); op.has_value()) {
       next = op.value();
       std::shared_ptr<FrameHeader> ptr = frames_[next];
+      // ARC 已淘汰旧记录，BPM 必须同步删除旧映射，否则以后查询旧 page 会出现假命中。
       page_table_.erase(ptr->page_id_);
       if (ptr->is_dirty_) {
+        // 旧数据写完才能 Reset/读入新页：异步请求引用的就是这块 frame 内存。
         SingleRequest(true, next, ptr->page_id_).get();
       }
       ptr->Reset();
       SingleRequest(false, next, page_id).get();
     } else {
+      // 所有 frame 都不可驱逐；Checked 接口把这个可预期的失败交给调用者处理。
       return std::nullopt;
     }
   }
+  // 在释放 BPM 锁之前先 pin；随后等待页面锁期间也不能让别人驱逐此页。
   frames_[next]->pin_count_++;
   frames_[next]->page_id_ = page_id;
   page_table_[page_id] = next;
   replacer_->RecordAccess(next, page_id, access_type);
   replacer_->SetEvictable(next, false);
+  // 调度器虽是异步的，本实现通过上面的 get() 等待加载完成才允许 Guard 使用数据。
   return next;
 }
 auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_type) -> std::optional<WritePageGuard> {
@@ -311,6 +329,7 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
     op = GetOrLoadPage(page_id, access_type);
   }
   // std::cout << "8" << '\n';
+  // 已离开 BPM 锁作用域；下面构造 Guard 等待页面锁时，不会堵住所有其他 BPM 操作。
   if (!op.has_value()) {
     return std::nullopt;
   }
@@ -361,6 +380,8 @@ auto BufferPoolManager::CheckedWritePage(page_id_t page_id, AccessType access_ty
  * @return 可选的锁 Guard；没有空闲帧时返回 `nullopt`，否则返回保证页面共享只读访问的 `ReadPageGuard`。
  */
 auto BufferPoolManager::CheckedReadPage(page_id_t page_id, AccessType access_type) -> std::optional<ReadPageGuard> {
+  // 阅读注意：当前读路径仍持有 BPM 锁构造 Guard，与写路径的缩小锁范围处理不对称。
+  // 若页面锁持有者又请求 BPM 锁，可能形成环形等待；此处注释记录现状，不改变实现。
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   std::optional<frame_id_t> op = GetOrLoadPage(page_id, access_type);
   if (!op.has_value()) {
@@ -454,6 +475,8 @@ auto BufferPoolManager::ReadPage(page_id_t page_id, AccessType access_type) -> R
  * 页面返回 `false`，否则返回 `true`。TODO(P1)：补充实现。
  */
 auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool {
+  // BPM 锁只保护映射和 frame 身份，不阻止已存在的写 Guard 修改页面内容。
+  // Unsafe 要求调用方另行保证写盘期间的数据稳定，不能把此锁当成页面锁。
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   auto iter = page_table_.find(page_id);
   if (iter == page_table_.end()) {
@@ -490,6 +513,8 @@ auto BufferPoolManager::FlushPageUnsafe(page_id_t page_id) -> bool {
  * 写入磁盘的是一致状态。建议完成 Checked 读写接口和 Page Guard 的 `Flush` 后再实现。TODO(P1)：补充实现。
  */
 auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
+  // 页面共享锁用于阻止并发写者，BPM 锁用于保护映射。
+  // 阅读注意：这里同样存在持有 BPM 锁等待页面锁的次序问题，需结合 CheckedReadPage 阅读。
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   auto iter = page_table_.find(page_id);
   if (iter == page_table_.end()) {
@@ -522,6 +547,7 @@ auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
  * Checked 读写接口和 `FlushPage` 后再实现。TODO(P1)：补充实现。
  */
 void BufferPoolManager::FlushAllPagesUnsafe() {
+  // 遍历当前驻留页逐页等待写回；不加载已被驱逐的页，也不取得各页的内容锁。
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   for (auto [page_id, frame_id] : page_table_) {
     std::shared_ptr<FrameHeader> ptr = frames_[frame_id];
@@ -549,6 +575,7 @@ void BufferPoolManager::FlushAllPagesUnsafe() {
  * 读写接口和 `FlushPage` 后再实现。TODO(P1)：补充实现。
  */
 void BufferPoolManager::FlushAllPages() {
+  // 逐帧取得共享页面锁；与 FlushPage 一样，要注意 BPM 锁与页面锁的获取次序。
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   for (auto [page_id, frame_id] : page_table_) {
     std::shared_ptr<FrameHeader> ptr = frames_[frame_id];
@@ -590,6 +617,7 @@ void BufferPoolManager::FlushAllPages() {
  * 全局锁来安全访问 page table 等元数据。TODO(P1)：补充实现。
  */
 auto BufferPoolManager::GetPinCount(page_id_t page_id) -> std::optional<size_t> {
+  // 原子计数只能保证计数值访问安全；仍需 BPM 锁保证查到的映射没有被删除或替换。
   std::lock_guard<std::mutex> lock(*bpm_latch_);
   if (auto iter = page_table_.find(page_id); iter != page_table_.end()) {
     return frames_[iter->second]->pin_count_;

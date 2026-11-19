@@ -80,6 +80,7 @@ class FrameHeader {
   /** @brief 此 header 所代表的帧 ID／帧下标。 */
   const frame_id_t frame_id_;
 
+  // 当前承载的页面身份，可随 frame 复用而改变；frame_id_ 则始终不变。
   page_id_t page_id_;
   /** @brief The readers / writer latch for this frame. */
   /** @brief 保护该帧页面数据的读写锁。 */
